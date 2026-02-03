@@ -1,8 +1,7 @@
 """
 FoundryIQ and Agent Framework Demo Backend
 
-Multi-agent orchestration using Microsoft Agent Framework and Azure AI Foundry.
-Agents are defined declaratively in YAML configs and loaded at runtime.
+Simple FastAPI wrapper around the orchestrator.
 """
 
 import os
@@ -13,19 +12,17 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from agent_loader import get_agent_loader, close_agent_loader
-
 
 class ChatRequest(BaseModel):
     message: str
     session_id: str | None = None
-    agent: str | None = None  # Optional: specify agent, otherwise orchestrator routes
+    agent: str | None = None
 
 
 class ChatResponse(BaseModel):
     message: str
     agent: str
-    sources: list[str] = []
+    sources: list[dict] = []
 
 
 class HealthResponse(BaseModel):
@@ -36,21 +33,9 @@ class HealthResponse(BaseModel):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan handler."""
-    # Startup - initialize agent loader
     print("Starting FoundryIQ Agent Framework Demo...")
-    try:
-        loader = await get_agent_loader()
-        print(f"Loaded {len(loader.agent_configs)} agents from configuration")
-        for name in loader.agent_configs:
-            print(f"  - {name}")
-    except Exception as e:
-        print(f"Warning: Could not initialize agents: {e}")
-    
     yield
-    
-    # Shutdown
     print("Shutting down...")
-    await close_agent_loader()
 
 
 app = FastAPI(
@@ -80,18 +65,18 @@ async def health():
 async def chat(request: ChatRequest):
     """
     Chat with the multi-agent system.
-    
-    The orchestrator will route the request to the appropriate agent
-    based on the query content, unless a specific agent is specified.
+    Uses the orchestrator to route and respond.
     """
     try:
-        loader = await get_agent_loader()
-        result = await loader.query(request.message, request.agent)
+        # Lazy import to avoid startup hang
+        from agents.orchestrator import run_single_query
+        
+        route, response_text, sources = await run_single_query(request.message)
         
         return ChatResponse(
-            message=result["message"],
-            agent=result["agent"],
-            sources=result.get("sources", []),
+            message=response_text,
+            agent=f"{route}-agent",
+            sources=sources,
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -100,35 +85,37 @@ async def chat(request: ChatRequest):
 @app.get("/agents")
 async def list_agents():
     """List available agents with their metadata."""
-    try:
-        loader = await get_agent_loader()
-        return {"agents": loader.get_available_agents()}
-    except Exception as e:
-        # Fallback if loader not initialized
-        return {
-            "agents": [
-                {
-                    "id": "orchestrator",
-                    "name": "Orchestrator",
-                    "description": "Routes requests to specialized agents",
-                },
-                {
-                    "id": "hr_agent",
-                    "name": "HR Agent",
-                    "description": "Handles HR-related queries",
-                },
-                {
-                    "id": "marketing_agent",
-                    "name": "Marketing Agent",
-                    "description": "Handles marketing-related queries",
-                },
-                {
-                    "id": "products_agent",
-                    "name": "Products Agent",
-                    "description": "Handles product-related queries",
-                },
-            ]
-        }
+    return {
+        "agents": [
+            {
+                "id": "orchestrator",
+                "name": "Orchestrator",
+                "description": "Routes requests to specialized agents based on query content",
+                "color": "#6366F1",
+            },
+            {
+                "id": "hr",
+                "name": "HR Agent",
+                "description": "Handles HR policies, PTO, benefits, and employee handbook queries",
+                "kb": "kb1-hr",
+                "color": "#8B5CF6",
+            },
+            {
+                "id": "marketing",
+                "name": "Marketing Agent",
+                "description": "Handles marketing campaigns, brand, and competitor analysis",
+                "kb": "kb2-marketing",
+                "color": "#EC4899",
+            },
+            {
+                "id": "products",
+                "name": "Products Agent",
+                "description": "Handles product catalog, features, and specifications",
+                "kb": "kb3-products",
+                "color": "#10B981",
+            },
+        ]
+    }
 
 
 # Mount static files for frontend

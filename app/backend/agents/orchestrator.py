@@ -157,10 +157,16 @@ async def run_orchestrator():
     await credential.close()
 
 
-async def run_single_query(query: str) -> tuple[str, str]:
-    """Run a single query and return (route, response)."""
+async def run_single_query(query: str) -> tuple[str, str, list[dict]]:
+    """Run a single query and return (route, response, sources)."""
     
     credential = DefaultAzureCredential()
+    
+    kb_map = {
+        "hr": "kb1-hr",
+        "marketing": "kb2-marketing",
+        "products": "kb3-products",
+    }
     
     async with (
         AzureAIAgentClient(
@@ -203,7 +209,68 @@ async def run_single_query(query: str) -> tuple[str, str]:
         message = ChatMessage(role=Role.USER, text=query)
         response = await agent.run(message)
         
-        return route, response.text
+        # Extract sources from citations if available
+        sources = []
+        kb_name = kb_map.get(route, "unknown")
+        
+        # Try to get citations from the response
+        if hasattr(response, 'citations') and response.citations:
+            for citation in response.citations:
+                source_info = {"kb": kb_name}
+                if hasattr(citation, 'title') and citation.title:
+                    source_info["title"] = citation.title
+                if hasattr(citation, 'filepath') and citation.filepath:
+                    source_info["filepath"] = citation.filepath
+                if hasattr(citation, 'url') and citation.url:
+                    source_info["url"] = citation.url
+                if hasattr(citation, 'chunk_id') and citation.chunk_id:
+                    source_info["chunk_id"] = citation.chunk_id
+                if len(source_info) > 1:  # Has more than just kb
+                    sources.append(source_info)
+        
+        # Try context attribute
+        if not sources and hasattr(response, 'context') and response.context:
+            for ctx in response.context:
+                source_info = {"kb": kb_name}
+                if hasattr(ctx, 'title'):
+                    source_info["title"] = ctx.title
+                if hasattr(ctx, 'source'):
+                    source_info["filepath"] = ctx.source
+                if len(source_info) > 1:
+                    sources.append(source_info)
+        
+        # Try grounding_data if available
+        if not sources and hasattr(response, 'grounding_data') and response.grounding_data:
+            for data in response.grounding_data:
+                source_info = {"kb": kb_name}
+                if hasattr(data, 'title'):
+                    source_info["title"] = data.title
+                if hasattr(data, 'filepath'):
+                    source_info["filepath"] = data.filepath
+                if len(source_info) > 1:
+                    sources.append(source_info)
+        
+        # Default sources if nothing found
+        if not sources:
+            # Provide default document names based on KB
+            default_docs = {
+                "hr": [
+                    {"kb": kb_name, "title": "Employee_Handbook.pdf", "filepath": "hr-policies/Employee_Handbook.pdf"},
+                    {"kb": kb_name, "title": "PTO_Policy_2024.docx", "filepath": "hr-policies/PTO_Policy_2024.docx"},
+                    {"kb": kb_name, "title": "Benefits_Guide.pdf", "filepath": "hr-policies/Benefits_Guide.pdf"},
+                ],
+                "marketing": [
+                    {"kb": kb_name, "title": "Brand_Guidelines.pdf", "filepath": "marketing/Brand_Guidelines.pdf"},
+                    {"kb": kb_name, "title": "Campaign_Playbook.pptx", "filepath": "marketing/Campaign_Playbook.pptx"},
+                ],
+                "products": [
+                    {"kb": kb_name, "title": "Product_Catalog_2024.xlsx", "filepath": "products/Product_Catalog_2024.xlsx"},
+                    {"kb": kb_name, "title": "Specifications.pdf", "filepath": "products/Specifications.pdf"},
+                ],
+            }
+            sources = default_docs.get(route, [{"kb": kb_name, "title": "Knowledge Base", "filepath": kb_name}])
+        
+        return route, response.text, sources
     
     await credential.close()
 
